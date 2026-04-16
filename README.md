@@ -1,5 +1,7 @@
 # 🐘 Patroni PostgreSQL HA Cluster (3 Nodes) + ⚖️ HAProxy Load Balancer
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+
 This guide documents a **production-ready baseline** for:
 
 - 3 PostgreSQL nodes managed by **Patroni**
