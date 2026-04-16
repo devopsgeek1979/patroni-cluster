@@ -655,3 +655,9 @@ If cluster bootstrap fails, validate:
 - unique `name` per node
 - correct `connect_address` per node
 - etcd quorum is healthy before starting Patroni
+
+---
+
+## 📄 License
+
+This project is licensed under the `MIT` License. See the `LICENSE` file for full text.
