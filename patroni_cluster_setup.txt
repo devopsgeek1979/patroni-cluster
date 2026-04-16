@@ -1,0 +1,260 @@
+Patroni Cluster Setup
+======================
+Note :
+1. Install epel release on RHEL 8
+2. Disable Selinux & Firewalld
+3. Create user postgres beofre installation of Patroni Package
+
+useradd postgres
+usermod -aG postgres root
+dnf update -y
+dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm && dnf update -y
+dnf config-manager --set-enabled codeready-builder-for-rhel-8-x86_64-rpms
+yum install -y vim wget nano curl git watchdog yum-utils
+nano /etc/watchdog.conf
+enable watchdog in watchdog.conf uncomment the line /dev/watchdog
+mknod /dev/watchdog c 10 130
+modprobe softdog
+chown postgres /dev/watchdog
+dnf module disable -y postgresql
+=============================================
+yum install -y https://repo.percona.com/yum/percona-release-latest.noarch.rpm && dnf update -y
+percona-release enable ppg-16 release
+yum install percona-ppg-server16 -y
+/usr/pgsql-16/bin/postgresql-16-setup initdb
+yum install -y percona-patroni etcd python3-python-etcd
+systemctl stop {etcd,patroni,postgresql}
+systemctl disable {etcd,patroni,postgresql}
+=================================================
+configure etcd cluster as per your ip schema as below -:
+=================================================
+nano /etc/etcd/etcd.conf
+
+name: 'node1'
+initial-cluster-token: PostgreSQL_HA_Cluster_1
+initial-cluster-state: new
+initial-cluster: node1=http://192.168.192.129:2380
+data-dir: /var/lib/etcd
+initial-advertise-peer-urls: http://192.168.192.129:2380 
+listen-peer-urls: http://192.168.192.129:2380
+advertise-client-urls: http://0.0.0.0:2379
+listen-client-urls: http://0.0.0.0:2379
+=======================================================
+Start etcd cluster
+etcdctl member add node2 --peer-urls=http://192.168.192.130:2380
+=======================================================
+systemctl enable --now etcd
+systemctl status etcd.service
+look for error if there are error check configuration
+Check configured etcd nodes
+=======================================================
+etcdctl --write-out=table --endpoints=192.168.192.129:2379 member list
++------------------+---------+-------+-----------------------------+---------------------+------------+
+|        ID        | STATUS  | NAME  |         PEER ADDRS          |    CLIENT ADDRS     | IS LEARNER |
++------------------+---------+-------+-----------------------------+---------------------+------------+
+| 3fe4cb5cc63ca599 | started | node3 | http://192.168.192.131:2380 | http://0.0.0.0:2379 |      false |
+| 71fbfa6bf6e173a1 | started | node1 | http://192.168.192.129:2380 | http://0.0.0.0:2379 |      false |
+| bb625e2a3863bae3 | started | node2 | http://192.168.192.130:2380 | http://0.0.0.0:2379 |      false |
++------------------+---------+-------+-----------------------------+---------------------+------------+
+if the output is not like above then check configuration.
+========================================================
+Configure Patroni Service
+========================================================
+export NODE_IP=`hostname -i | awk '{print $1}'
+DATA_DIR="/var/lib/pgsql/data/"
+PG_BIN_DIR="/usr/pgsql-16/bin"
+NAMESPACE="test_cluster"
+SCOPE="cluster_1"
+mkdir -p /etc/patroni/
+chown -R  postgres:postgres /etc/patroni/
+mkdir /var/lib/pgsql/data/ -p
+chown -R postgres:postgres /var/lib/pgsql/data/
+chmod 700 /var/lib/pgsql/data/
+=================================================
+Configure yaml file for Patroni
+=============================================
+mkdir -p /var/lib/pgsql/archived
+nano /etc/patroni/patroni.yml
+================================
+---
+scope: cluster_1
+name: db1
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: 192.168.192.129:8008, 192.168.192.130:8008, 192.168.192.131:8008
+
+etcd3:
+  host: 192.168.192.129:2379, 192.168.192.130:2379, 192.168.192.131:2379
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_level: replica
+        hot_standby: "on"
+        wal_keep_segments: 10
+        max_wal_senders: 5
+        max_replication_slots: 10
+        wal_log_hints: "on"
+        logging_collector: "on"
+        max_wal_size: "10GB"
+        archive_mode: "on"
+        archive_timeout: 600s
+        archive_command: "cp -f %p /var/lib/pgsql/archived/%f"
+
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+
+  pg_hba:
+    - host replication replicator 127.0.0.1/32 trust
+    - host replication replicator 0.0.0.0/0 trust
+    - host all all 0.0.0.0/0 trust
+    - host all all ::0/0 trust
+
+  users:
+    admin:
+      password: qaz123
+      options:
+        - createrole
+        - createdb
+    percona:
+      password: qaz123
+      options:
+        - createrole
+        - createdb
+
+postgresql:
+  cluster_name: cluster_1
+  listen: 0.0.0.0:5432
+  connect_address: 192.168.192.129:5432, 192.168.192.130:5432, 192.168.192.131:5432
+  data_dir: /var/lib/pgsql/data/
+  bin_dir: /usr/pgsql-16/bin
+  pgpass: /tmp/pgpass0
+  authentication:
+    replication:
+      username: replicator
+      password: replPasswd
+    superuser:
+      username: postgres
+      password: qaz123
+  parameters:
+    unix_socket_directories: "/var/run/postgresql/"
+  create_replica_methods:
+    - basebackup
+  basebackup:
+    checkpoint: 'fast'
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false
+
+watchdog:
+  mode: required
+  device: /dev/watchdog
+  safety_margin: 5
+==============================================================
+configure patroni service
+==============================================================
+[Unit]
+Description=Runners to orchestrate a high-availability PostgreSQL
+After=syslog.target network.target 
+
+[Service]
+Type=simple 
+
+User=postgres
+Group=postgres 
+
+# Start the patroni process
+ExecStart=/bin/patroni /etc/patroni/patroni.yml 
+
+# Send HUP to reload from patroni.yml
+ExecReload=/bin/kill -s HUP $MAINPID 
+
+# only kill the patroni process, not its children, so it will gracefully stop postgres
+KillMode=process 
+
+# Give a reasonable amount of time for the server to start up/shut down
+TimeoutSec=30 
+
+# Do not restart the service if it crashes, we want to manually inspect database on failure
+Restart=no 
+
+[Install]
+WantedBy=multi-user.target
+==================================================================================
+systemctl daemon-reload
+systemctl enable --now patroni
+systemctl restart patroni
+journalctl -fu patroni
+systemctl start postgresql && systemctl start postgresql && systemctl enable patroni && systemctl start patroni
+===================================================================================
+configure HA-Proxy Node
+===================================================================================
+yum install -y percona-haproxy
+nano /etc/haproxy/haproxy.cfg
+==================================================================================
+global
+    log         127.0.0.1 local2
+    chroot      /var/lib/haproxy
+    pidfile     /var/run/haproxy.pid
+    maxconn     10000
+    user        haproxy
+    group       haproxy
+    daemon
+    stats socket /var/lib/haproxy/stats
+
+defaults
+    mode                    tcp
+    log                     global
+    option                  tcplog
+    retries                 3
+    timeout queue           1m
+    timeout connect         10s
+    timeout client          1m
+    timeout server          1m
+    timeout check           10s
+    maxconn                 900
+
+listen stats
+    mode http
+    bind *:7000
+    stats enable
+    stats uri /
+
+listen primary
+    bind 192.168.192.128:5000
+    option httpchk OPTIONS /master
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+    server pgsql01 192.168.192.130:5432 maxconn 1000 check port 8008
+    server pgsql02 192.168.192.131:5432 maxconn 1000 check port 8008
+    server pgsql03 192.168.192.132:5432 maxconn 1000 check port 8008
+
+listen standby
+    bind 192.168.192.128:5001
+    balance roundrobin
+    option httpchk OPTIONS /replica
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+    server pgsql01 192.168.192.130:5432 maxconn 1000 check port 8008
+    server pgsql02 192.168.192.131:5432 maxconn 1000 check port 8008
+    server pgsql03 192.168.192.132:5432 maxconn 1000 check port 8008
+	
+====================================================================================
+systemctl enable --now haproxy
+systemctl restart haproxy
+journalctl -u haproxy.service -n 100 -f
+
+

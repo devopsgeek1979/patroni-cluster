@@ -1,0 +1,79 @@
+scope: cluster_1
+name: db3
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: 192.168.192.131:8008
+
+etcd3:
+  hosts: 192.168.192.129:2379,192.168.192.130:2379,192.168.192.131:2379
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_level: replica
+        hot_standby: "on"
+        max_wal_senders: 10
+        max_replication_slots: 10
+        wal_log_hints: "on"
+        logging_collector: "on"
+        max_wal_size: "10GB"
+        archive_mode: "on"
+        archive_timeout: 600s
+        archive_command: "cp -f %p /var/lib/pgsql/archived/%f"
+
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+
+  pg_hba:
+    - host replication replicator 192.168.192.0/24 md5
+    - host all all 192.168.192.0/24 md5
+    - host all all 127.0.0.1/32 md5
+
+  users:
+    admin:
+      password: "CHANGE_ME_ADMIN_PASSWORD"
+      options: [createrole, createdb]
+    percona:
+      password: "CHANGE_ME_PERCONA_PASSWORD"
+      options: [createrole, createdb]
+
+postgresql:
+  cluster_name: cluster_1
+  listen: 0.0.0.0:5432
+  connect_address: 192.168.192.131:5432
+  data_dir: /var/lib/pgsql/data/
+  bin_dir: /usr/pgsql-16/bin
+  pgpass: /tmp/pgpass0
+  authentication:
+    replication:
+      username: replicator
+      password: "CHANGE_ME_REPLICATOR_PASSWORD"
+    superuser:
+      username: postgres
+      password: "CHANGE_ME_SUPERUSER_PASSWORD"
+  parameters:
+    unix_socket_directories: "/var/run/postgresql/"
+  create_replica_methods:
+    - basebackup
+  basebackup:
+    checkpoint: fast
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false
+
+watchdog:
+  mode: required
+  device: /dev/watchdog
+  safety_margin: 5
